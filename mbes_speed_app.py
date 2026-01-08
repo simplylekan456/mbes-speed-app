@@ -1,16 +1,16 @@
 import math
 import streamlit as st
 
-"""
-Multibeam vessel-speed and survey-planning helper.
+REFERENCES_HELP = """
+**Multibeam vessel-speed and survey-planning helper**
 
-Main formulas follow:
-- IHO S-44 Edition 6.1.0 (Table 1: TVU, feature detection; Annex C: QC guidance).
-- IHO C-13 'Manual on Hydrography' (Ch. 3–4: depth determination and seafloor
-  feature detection, line spacing and overlap).
-- NOAA 'Hydrographic Surveys Specifications and Deliverables' (HSSD, latest versions)
-  and national specs (e.g. CHS standards) for node density, overlap and coverage.
+**Main formulas / standards used:**
+• IHO S-44 Edition 6.1.0 (Table 1: TVU; Annex-C: QC guidance & line spacing)
+• IHO C-13 *Manual on Hydrography* (Ch. 3–4: feature detection, overlap)
+• NOAA HSSD (Hydrographic Survey Specifications & Deliverables)
+• National CHS-style specifications for node density, overlap & cube detection
 """
+
 
 
 # ---------------- SONAR DEAD-TIME PRESETS ----------------
@@ -44,6 +44,10 @@ ORDER_COVERAGE = {
 
     "Custom (set coverage manually)": None,
 }
+
+# Ratio used to convert optimum speed to an operational minimum
+MIN_SPEED_RATIO = 0.5  # 0.5 ⇒ min speed is 50% of optimum
+
 
 # a, b coefficients for TVU (Total Vertical Uncertainty) from S-44 Table 1
 # TVU_max(d) = sqrt( a^2 + (b * d)^2 )
@@ -284,6 +288,23 @@ def main() -> None:
                      "(e.g., processing, file IO, safety margin).",
         )
 
+    # ---------- Speed planning (safety factor) ----------
+    st.markdown("### Speed planning")
+
+    speed_sf = st.slider(
+        "Speed safety factor (fraction of max speed used for optimum planning)",
+        min_value=0.40,
+        max_value=1.00,
+        value=0.80,
+        step=0.05,
+        help=(
+            "Example: 0.80 means optimum speed = 80% of the computed max speed. "
+            "Minimum operational speed is MIN_SPEED_RATIO of that optimum."
+        ),
+    )
+
+
+
     # -------------------------------------------------------------------------
     # Main panel
     # -------------------------------------------------------------------------
@@ -303,58 +324,57 @@ def main() -> None:
     area_length_m = None
     area_width_m = None
     overhead_pct = None
+
     if mode == "Survey planner":
         st.subheader("Survey-area parameters")
-        col_a, col_b, col_c = st.columns(3)
-        with col_a:
+
+        col1, col2 = st.columns(2)
+        with col1:
             area_length_m = st.number_input(
-                "Along-track length of area (m)",
+                "Area length along-track (m)",
+                min_value=0.0,
                 value=5000.0,
-                min_value=100.0,
                 step=100.0,
             )
-        with col_b:
-            area_width_m = st.number_input(
-                "Across-track width of area (m)",
-                value=2000.0,
-                min_value=100.0,
-                step=50.0,
-            )
-        with col_c:
-            overhead_pct = st.number_input(
-                "Overhead for turns & inefficiencies (%)",
-                value=20.0,
-                min_value=0.0,
-                max_value=200.0,
-                step=5.0,
-            )
-
-        col_d, col_e, col_f = st.columns(3)
-        with col_d:
             daily_hours = st.number_input(
                 "Planned survey hours per day",
-                value=12.0,
                 min_value=1.0,
                 max_value=24.0,
-                step=1.0,
+                value=12.0,
+                step=0.5,
             )
-        with col_e:
+        with col2:
+            area_width_m = st.number_input(
+                "Area width across-track (m)",
+                min_value=0.0,
+                value=2000.0,
+                step=100.0,
+            )
             weather_downtime_pct = st.number_input(
                 "Weather / operational downtime allowance (%)",
-                value=20.0,
                 min_value=0.0,
-                max_value=100.0,
+                max_value=200.0,
+                value=20.0,
                 step=5.0,
             )
-        with col_f:
-            fuel_burn_lph = st.number_input(
-                "Fuel burn at survey speed (L/h, optional)",
-                value=0.0,
-                min_value=0.0,
-                step=10.0,
-            )
 
-        fuel_price = st.number_input(
+        overhead_pct = st.number_input(
+            "Line-change / manoeuvre overhead (%)",
+            min_value=0.0,
+            max_value=200.0,
+            value=15.0,
+            step=5.0,
+            help="Allowance for line-changes, turns, checks, etc.",
+        )
+
+        fuel_burn_lph = st.number_input(
+            "Fuel burn at survey speed (L/h, optional)",
+            min_value=0.0,
+            value=0.0,
+            step=10.0,
+        )
+
+    fuel_price = st.number_input(
             "Fuel price (per L, optional)",
             value=0.0,
             min_value=0.0,
@@ -386,6 +406,17 @@ def main() -> None:
             along_step = advance_fraction * L                      # [m per ping]
             speed_ms = along_step / T                              # [m/s]
             speed_kts = speed_ms * KNOTS_PER_M_S
+
+            # Convert to planning speeds (max, optimum, minimum)
+            v_ms = speed_ms
+            v_knots = speed_kts
+
+            v_opt_ms = v_ms * speed_sf
+            v_opt_knots = v_knots * speed_sf
+
+            v_min_ms = v_opt_ms * MIN_SPEED_RATIO
+            v_min_knots = v_opt_knots * MIN_SPEED_RATIO
+
 
             # Across-track line spacing & overlap (for info + planner mode)
             line_spacing = W / C_eff                               # [m]
@@ -420,7 +451,13 @@ def main() -> None:
                     f"- Swath width **W** ≈ `{W:.1f}` m\n"
                     f"- Line spacing implied by coverage **S** ≈ `{line_spacing:.1f}` m\n"
                     f"- Across-track overlap ≈ `{overlap_pct:.1f} %`"
+
                 )
+                st.info(
+                    f"Optimum speed ≈ **{v_opt_knots:.2f} kn**, "
+                    f"Operational min ≈ **{v_min_knots:.2f} kn**"
+                )
+
 
             # -----------------------------------------------------------------
             # Output: Survey-planner mode
@@ -467,7 +504,34 @@ def main() -> None:
                     f"- With overhead ≈ **{survey_hours_eff:.1f} h**\n"
                     f"- With weather allowance ≈ **{survey_hours_weather:.1f} h**\n"
                     f"- Time estimate ≈ **{survey_days:.1f} days** (@ {daily_hours:.1f} h/day)"
+
                 )
+
+
+                st.markdown("#### Speed summary")
+
+                col_a, col_b, col_c = st.columns(3)
+                with col_a:
+                    st.metric("Max Speed (m/s)", f"{v_ms:.3f}")
+                with col_b:
+                    st.metric("Max Speed (knots)", f"{v_knots:.3f}")
+                with col_c:
+                    st.metric(
+                        "Advance per Ping",
+                        f"{advance_fraction * 100:.1f} % of footprint",
+                    )
+
+                col_d, col_e, col_f = st.columns(3)
+                with col_d:
+                    st.metric("Optimum Speed (m/s)", f"{v_opt_ms:.3f}")
+                with col_e:
+                    st.metric("Optimum Speed (knots)", f"{v_opt_knots:.3f}")
+                with col_f:
+                    st.metric(
+                        "Operational Min Speed (knots)",
+                        f"{v_min_knots:.3f}",
+                    )
+
 
                 # Optional: fuel estimate
                 fuel_l = None
@@ -525,6 +589,13 @@ def main() -> None:
 
         except Exception as exc:  # noqa: BLE001
             st.error(f"Something went wrong in the calculation: {exc}")
+
+        # -----------------------------------------------------------------
+        # Reference / Standard Info (footer)
+        # -----------------------------------------------------------------
+        st.markdown("---")
+        with st.expander("References / Standards Used"):
+            st.markdown(REFERENCES_HELP)
 
 
 if __name__ == "__main__":
